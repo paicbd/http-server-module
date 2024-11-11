@@ -3,7 +3,6 @@ package com.http.server.http;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.http.server.dto.GlobalRecords;
 import com.http.server.utils.AppProperties;
-import com.http.server.components.AutoRegister;
 import com.paicbd.smsc.dto.GeneralSettings;
 import com.paicbd.smsc.dto.ServiceProvider;
 import com.paicbd.smsc.utils.Converter;
@@ -11,13 +10,13 @@ import com.paicbd.smsc.ws.SocketSession;
 import jakarta.annotation.PostConstruct;
 import lombok.Getter;
 import lombok.RequiredArgsConstructor;
-import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
+import org.springframework.util.Assert;
 import redis.clients.jedis.JedisCluster;
 
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 
 import static com.http.server.utils.Constants.WEBSOCKET_STATUS_ENDPOINT;
 import static com.http.server.utils.Constants.PARAM_UPDATE_STATUS;
@@ -32,36 +31,45 @@ public class HttpServerManager {
     private final JedisCluster jedisCluster;
     private final AppProperties appProperties;
     private final SocketSession socketSession;
-    @Getter
-    private final Map<String, ServiceProvider> serviceProviderCache = new ConcurrentHashMap<>();
-    @Getter
-    private final Map<Integer, ServiceProvider> serviceProviderByNetworkIdCache = new ConcurrentHashMap<>();
-    @Getter
-    private final Map<String, GeneralSettings> generalSettingsCache = new ConcurrentHashMap<>();
+    private final ConcurrentMap<Integer, String> systemIdByNetworkIdCache;
+    private final ConcurrentMap<String, ServiceProvider> serviceProviderBySystemIdCache;
+    private final ConcurrentMap<Integer, ServiceProvider> serviceProviderByNetworkIdCache;
 
-    @Getter
-    GeneralSettings generalSettings;
-
-    private final AutoRegister autoRegister;
-    @Setter
-    @Getter
     private String state;
+    @Getter
+    private GeneralSettings generalSettings;
 
     @PostConstruct
     public void initializeCaches() {
-        this.autoRegister.register();
         this.manageServerHandler();
-        loadServiceProviderCache();
-        loadOrUpdateGeneralSettingsCache();
+        this.loadServiceProviderCache();
+        this.loadOrUpdateGeneralSettingsCache();
     }
 
     public void loadServiceProviderCache() {
-        loadConfigsToCache(appProperties.getServiceProvidersHashTable(), new TypeReference<ServiceProvider>() {
-                },
-                (key, data) -> {
-                    serviceProviderCache.put(key, data);
-                    serviceProviderByNetworkIdCache.put(data.getNetworkId(), data);
-                });
+        Map<String, String> serviceProvidersHashTable = jedisCluster.hgetAll(appProperties.getServiceProvidersHashTable());
+        if (serviceProvidersHashTable.isEmpty()) {
+            log.error("Service providers not found in Redis for key {}", appProperties.getServiceProvidersHashTable());
+            return;
+        }
+
+        serviceProvidersHashTable.forEach((networkId, serviceProviderInRaw) -> {
+            try {
+                ServiceProvider serviceProvider = Converter.stringToObject(serviceProviderInRaw, ServiceProvider.class);
+                Assert.notNull(serviceProvider, "An error occurred while converting the service provider");
+
+                if (!"HTTP".equalsIgnoreCase(serviceProvider.getProtocol())) {
+                    log.warn("Service provider with networkId {} is not HTTP, Skipping", serviceProvider.getNetworkId());
+                    return;
+                }
+                serviceProviderBySystemIdCache.put(serviceProvider.getSystemId(), serviceProvider);
+                serviceProviderByNetworkIdCache.put(serviceProvider.getNetworkId(), serviceProvider);
+                systemIdByNetworkIdCache.put(serviceProvider.getNetworkId(), serviceProvider.getSystemId());
+                log.info("Added ServiceProvider to cache: {}", serviceProvider);
+            } catch (Exception e) {
+                log.error("Error initializing cache for key {}: {}", networkId, e.getMessage());
+            }
+        });
     }
 
     public void loadOrUpdateGeneralSettingsCache() {
@@ -71,76 +79,38 @@ public class HttpServerManager {
             return;
         }
 
-        this.generalSettings = Converter.stringToObject(stringGeneralSettings, new TypeReference<>() {
-        });
+        this.generalSettings = Converter.stringToObject(stringGeneralSettings, GeneralSettings.class);
     }
 
-    private <T> void loadConfigsToCache(String hashKey, TypeReference<T> typeReference, CacheLoader<T> cacheLoader) {
-        Map<String, String> hashValues = jedisCluster.hgetAll(hashKey);
-        hashValues.forEach((key, data) -> {
-            try {
-                T configData = Converter.stringToObject(data, typeReference);
-                cacheLoader.addToCache(key, configData);
-                log.info("Added {} to cache: {}", typeReference.getType(), configData);
-            } catch (Exception e) {
-                log.error("Error initializing cache for key {}: {}", key, e.getMessage());
-            }
-        });
-    }
-
-    @FunctionalInterface
-    interface CacheLoader<T> {
-        void addToCache(String key, T data);
-    }
-
-    public void updateServiceProvider(String systemId) {
-        log.info("Updating service provider {}", systemId);
+    public void updateServiceProvider(String stringNetworkId) {
         try {
-            String serviceProviderJson = jedisCluster.hget(appProperties.getServiceProvidersHashTable(), systemId);
+            String serviceProviderJson = jedisCluster.hget(appProperties.getServiceProvidersHashTable(), stringNetworkId);
             if (serviceProviderJson == null) {
-                log.error("Service provider not found in Redis for systemId {}", systemId);
+                log.error("Service provider not found in Redis for networkId {}", stringNetworkId);
                 return;
             }
             ServiceProvider serviceProviderDTO = Converter.stringToObject(serviceProviderJson, new TypeReference<>() {
             });
-            updateServiceProviderInCache(systemId, serviceProviderDTO);
+
+            if (!"HTTP".equalsIgnoreCase(serviceProviderDTO.getProtocol())) {
+                log.warn("Service provider with networkId {} is not HTTP, Skipping with update", stringNetworkId);
+                return;
+            }
+
+            updateServiceProviderInCache(serviceProviderDTO);
             if (serviceProviderDTO.getEnabled() == 0) {
-                log.warn("Sending websocket notification for service provider {}", systemId);
-                socketSession.getStompSession().send(WEBSOCKET_STATUS_ENDPOINT, String.format("%s,%s,%s,%s", TYPE, systemId, PARAM_UPDATE_STATUS, STOPPED));
+                log.warn("Sending websocket notification for service provider with networkId {}", stringNetworkId);
+                socketSession.getStompSession().send(WEBSOCKET_STATUS_ENDPOINT, String.format("%s,%s,%s,%s", TYPE, serviceProviderDTO.getNetworkId(), PARAM_UPDATE_STATUS, STOPPED));
             }
         } catch (Exception e) {
-            log.error("Error updating service provider {}: {}", systemId, e.getMessage());
+            log.error("Error updating service provider {}: {}", stringNetworkId, e.getMessage());
         }
     }
 
-    private void updateServiceProviderInCache(String systemId, ServiceProvider serviceProvider) {
-        serviceProviderCache.put(systemId, serviceProvider);
+    private void updateServiceProviderInCache(ServiceProvider serviceProvider) {
+        serviceProviderBySystemIdCache.put(serviceProvider.getSystemId(), serviceProvider);
         serviceProviderByNetworkIdCache.put(serviceProvider.getNetworkId(), serviceProvider);
-    }
-
-    public ServiceProvider getServiceProvider(String systemId) {
-        return serviceProviderCache.get(systemId);
-    }
-
-    public ServiceProvider getServiceProviderByNetworkId(Integer networkId) {
-        return serviceProviderByNetworkIdCache.get(networkId);
-    }
-
-    /**
-     * Removes a ServiceProvider configuration from the cache.
-     *
-     * @param key The key of the configuration to remove
-     */
-    void removeServiceProviderFromCache(String key) {
-        ServiceProvider config = serviceProviderCache.remove(key);
-        if (config != null) {
-            serviceProviderByNetworkIdCache.values().remove(config);
-        }
-        log.warn("Removed ServiceProvider configuration with key {}", key);
-    }
-
-    public void removeServiceProvider(String systemId) {
-        removeServiceProviderFromCache(systemId);
+        systemIdByNetworkIdCache.put(serviceProvider.getNetworkId(), serviceProvider.getSystemId());
     }
 
     /**
@@ -155,7 +125,7 @@ public class HttpServerManager {
             GlobalRecords.ServerHandler serverHandler = Converter.stringToObject(serverHandlerJson, new TypeReference<>() {
             });
             this.state = serverHandler.state();
-            log.info(this.state);
+            log.info("State: {}", this.state);
         } catch (Exception e) {
             log.error("Error on getServerHandler: {}", e.getMessage());
         }
@@ -167,6 +137,6 @@ public class HttpServerManager {
      * @return true if the server is active, false otherwise
      */
     public boolean isServerActive() {
-        return this.state.equalsIgnoreCase(STARTED);
+        return STARTED.equalsIgnoreCase(state);
     }
 }
