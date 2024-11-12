@@ -1,44 +1,44 @@
 package com.http.server.config;
 
+
 import com.http.server.http.HttpServerManager;
-import com.http.server.utils.RestInterceptor;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.Mock;
-import org.mockito.junit.jupiter.MockitoExtension;
-import org.mockito.junit.jupiter.MockitoSettings;
-import org.mockito.quality.Strictness;
-import org.springframework.web.servlet.config.annotation.InterceptorRegistration;
-import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
+import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.test.context.junit.jupiter.SpringExtension;
+import org.springframework.test.web.servlet.MockMvc;
 
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-@ExtendWith(MockitoExtension.class)
-@MockitoSettings(strictness = Strictness.LENIENT)
+@WebMvcTest(WebConfig.class)
+@ExtendWith(SpringExtension.class)
 class WebConfigTest {
 
-    @Mock
-    private HttpServerManager mockHttpServerManager;
+    @Autowired
+    private MockMvc mockMvc;
 
-    @Mock
-    private InterceptorRegistry mockInterceptorRegistry;
+    @MockBean
+    private HttpServerManager httpServerManager;
 
-    private WebConfig webConfig;
+    @Test
+    void testPreHandle_ServerInactive() throws Exception {
+        when(httpServerManager.isServerActive()).thenReturn(false);
 
-    @BeforeEach
-    void setUp() {
-        webConfig = new WebConfig(mockHttpServerManager);
+        mockMvc.perform(get("/any-path"))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(content().string("Server unavailable at this time."));
     }
 
     @Test
-    void addInterceptors() {
-        InterceptorRegistration mockRegistration = mock(InterceptorRegistration.class);
-        when(mockInterceptorRegistry.addInterceptor(any(RestInterceptor.class))).thenReturn(mockRegistration);
-        webConfig.addInterceptors(mockInterceptorRegistry);
-        verify(mockInterceptorRegistry).addInterceptor(any(RestInterceptor.class));
+    void testPreHandle_ServerActive() throws Exception {
+        when(httpServerManager.isServerActive()).thenReturn(true);
+
+        mockMvc.perform(get("/unavailable"))
+                .andExpect(status().isNotFound());
     }
 }

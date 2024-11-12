@@ -1,7 +1,7 @@
-package com.http.server.controllers;
+package com.http.server.controller;
 
 import com.http.server.dto.GlobalRecords;
-import com.http.server.services.MessageService;
+import com.http.server.service.MessageService;
 import lombok.extern.slf4j.Slf4j;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
@@ -19,7 +19,7 @@ public class MessageController {
 
     @PostMapping("/message")
     public Mono<ResponseEntity<GlobalRecords.SubmitResponse>> message(@RequestBody GlobalRecords.MessageRequest messageRequest) {
-        var response = messageService.message(messageRequest);
+        var response = messageService.onMessageReceive(messageRequest);
         if (response.errorMessage().isEmpty()) {
             return Mono.just(new ResponseEntity<>(response, HttpStatus.OK));
         } else {

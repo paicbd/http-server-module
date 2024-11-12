@@ -1,6 +1,7 @@
 package com.http.server.components;
 
 import com.http.server.utils.AppProperties;
+import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -17,6 +18,7 @@ public class AutoRegister {
     private final AppProperties appProperties;
     private final JedisCluster jedisCluster;
 
+    @PostConstruct
     public void register() {
         log.info("Registering instance in service registry");
         String instance = createInstance(""); // empty state means the instance is starting, by default take the initial status defined in the appProperties

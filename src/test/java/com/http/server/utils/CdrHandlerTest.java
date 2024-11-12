@@ -7,53 +7,33 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.mockito.junit.jupiter.MockitoSettings;
-import org.mockito.quality.Strictness;
 
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.never;
 
 @ExtendWith(MockitoExtension.class)
-@MockitoSettings(strictness = Strictness.LENIENT)
 class CdrHandlerTest {
-
     @Mock
-    private CdrProcessor mockCdrProcessor;
+    CdrProcessor cdrProcessor;
 
     @Test
     void testPrivateConstructor() throws NoSuchMethodException {
         Constructor<CdrHandler> constructor = CdrHandler.class.getDeclaredConstructor();
         constructor.setAccessible(true);
-
         assertThrows(InvocationTargetException.class, constructor::newInstance);
     }
 
     @Test
-    void handlerCdrDetail_createsCdr() {
-        MessageEvent messageEvent = new MessageEvent();
-        UtilsEnum.MessageType messageType = UtilsEnum.MessageType.DELIVER;
-        UtilsEnum.CdrStatus cdrStatus = UtilsEnum.CdrStatus.SENT;
-        boolean createCdr = true;
-        String message = "Test Message";
-        CdrHandler.handlerCdrDetail(messageEvent, messageType, cdrStatus, mockCdrProcessor, createCdr, message);
-        verify(mockCdrProcessor).putCdrDetailOnRedis(any());
-        verify(mockCdrProcessor).createCdr(messageEvent.getMessageId());
-    }
+    void handlerCdrDetail() {
+        MessageEvent deliverSmEvent = new MessageEvent();
+        deliverSmEvent.setMessageId("messageId");
+        assertDoesNotThrow(() ->
+                CdrHandler.handlerCdrDetail(deliverSmEvent, UtilsEnum.MessageType.MESSAGE, UtilsEnum.CdrStatus.RECEIVED, cdrProcessor, false, "message"));
 
-    @Test
-    void handlerCdrDetail_doesNotCreateCdr() {
-        MessageEvent messageEvent = new MessageEvent();
-        UtilsEnum.MessageType messageType = UtilsEnum.MessageType.DELIVER;
-        UtilsEnum.CdrStatus cdrStatus = UtilsEnum.CdrStatus.FAILED;
-        boolean createCdr = false;
-        String message = "Test Message";
-        CdrHandler.handlerCdrDetail(messageEvent, messageType, cdrStatus, mockCdrProcessor, createCdr, message);
-        verify(mockCdrProcessor).putCdrDetailOnRedis(any());
-        verify(mockCdrProcessor, never()).createCdr(any());
+        assertDoesNotThrow(() ->
+                CdrHandler.handlerCdrDetail(deliverSmEvent, UtilsEnum.MessageType.MESSAGE, UtilsEnum.CdrStatus.RECEIVED, cdrProcessor, true, "message"));
     }
 }

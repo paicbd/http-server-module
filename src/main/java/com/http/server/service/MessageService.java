@@ -1,6 +1,5 @@
-package com.http.server.services;
+package com.http.server.service;
 
-import com.http.server.components.CreditHandler;
 import com.http.server.dto.GlobalRecords;
 import com.http.server.http.HttpServerManager;
 import com.http.server.utils.Constants;
@@ -25,6 +24,7 @@ import redis.clients.jedis.JedisCluster;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static com.http.server.utils.Constants.IS_STARTED;
@@ -36,13 +36,13 @@ import static com.http.server.utils.Constants.IS_STARTED;
 @Service
 @RequiredArgsConstructor
 public class MessageService {
-    private final AtomicInteger requestPerSecond = new AtomicInteger(0);
     private final JedisCluster jedisCluster;
     private final CdrProcessor cdrProcessor;
     private final AppProperties appProperties;
     private final HttpServerManager httpServerManager;
-    private final CreditHandler handlerCreditBalance;
+    private final ConcurrentMap<String, ServiceProvider> serviceProviderBySystemIdCache;
 
+    private final AtomicInteger requestPerSecond = new AtomicInteger(0);
 
     @PostConstruct
     public void init() {
@@ -56,7 +56,7 @@ public class MessageService {
      * @return A Mono wrapping the ResponseEntity with a success message if processing is successful,
      * otherwise an error response
      */
-    public GlobalRecords.SubmitResponse message(GlobalRecords.MessageRequest messageRequest) {
+    public GlobalRecords.SubmitResponse onMessageReceive(GlobalRecords.MessageRequest messageRequest) {
         try {
             if (!SmppEncoding.isValidDataCoding(messageRequest.dataCoding())) {
                 log.info("Invalid data coding {} for submit_sm: {}", messageRequest.dataCoding(), messageRequest);
@@ -64,29 +64,30 @@ public class MessageService {
             }
 
             String systemId = messageRequest.systemId();
-            if (httpServerManager.getServiceProvider(systemId).getEnabled() != IS_STARTED) {
+            if (serviceProviderBySystemIdCache.get(systemId).getEnabled() != IS_STARTED) {
                 return new GlobalRecords.SubmitResponse("Service not found");
             }
 
-            if (handlerCreditBalance.hasCredit(systemId)) {
-                MessageEvent messageEventBase = this.getMessageEventBase(messageRequest);
+            ServiceProvider sp = serviceProviderBySystemIdCache.get(systemId);
+            Objects.requireNonNull(sp, "Service provider not found");
+
+            if (Boolean.TRUE.equals(sp.getHasAvailableCredit())) {
+                MessageEvent messageEventBase = this.getMessageEventBase(messageRequest, sp);
                 return switch (messageRequest.destinationAddr()) {
                     case String destination -> this.processSingleDestinationMessage(messageEventBase, destination);
-                    case List<?> destinationArrays -> this.processMultiDestinationMessage(messageEventBase, destinationArrays);
+                    case List<?> destinationsArray -> this.processMultiDestinationMessage(messageEventBase, destinationsArray);
                     default -> new GlobalRecords.SubmitResponse("Bad type format of destination");
                 };
             }
             return new GlobalRecords.SubmitResponse("Service provider don't have enough credits");
-
         } catch (Exception e) {
             log.error("Error on process messages -> {}", e.getMessage());
             return new GlobalRecords.SubmitResponse(e.getMessage());
         }
     }
 
-    private MessageEvent getMessageEventBase(GlobalRecords.MessageRequest messageRequest) {
+    private MessageEvent getMessageEventBase(GlobalRecords.MessageRequest messageRequest, ServiceProvider sp) {
         GeneralSettings httpGeneralSettings = httpServerManager.getGeneralSettings();
-        ServiceProvider sp = httpServerManager.getServiceProvider(messageRequest.systemId());
         MessageEvent messageEvent = new MessageEvent();
         messageEvent.setSystemId(messageRequest.systemId());
         messageEvent.setOriginNetworkId(sp.getNetworkId());
@@ -105,6 +106,7 @@ public class MessageService {
         messageEvent.setSmDefaultMsgId(messageRequest.smDefaultMsgId());
         messageEvent.setShortMessage(messageRequest.shortMessage());
         messageEvent.setOptionalParameters(messageRequest.optionalParameters());
+        messageEvent.setCustomParams(messageRequest.customParams());
         return messageEvent;
     }
 
@@ -143,5 +145,4 @@ public class MessageService {
         var messageIdList = listOfMessage.stream().map(MessageEvent::getMessageId).toList();
         return new GlobalRecords.SubmitResponse(messageEventBase.getSystemId(), messageIdList);
     }
-
 }

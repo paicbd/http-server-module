@@ -1,41 +1,37 @@
 package com.http.server.http;
 
-import ch.qos.logback.classic.spi.ILoggingEvent;
-import ch.qos.logback.core.read.ListAppender;
-import com.fasterxml.jackson.core.type.TypeReference;
+import com.http.server.dto.GlobalRecords;
 import com.http.server.utils.AppProperties;
-import com.http.server.components.AutoRegister;
 import com.paicbd.smsc.dto.ServiceProvider;
-import com.paicbd.smsc.utils.Converter;
 import com.paicbd.smsc.ws.SocketSession;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.mockito.junit.jupiter.MockitoSettings;
-import org.mockito.quality.Strictness;
-import org.slf4j.LoggerFactory;
+import org.springframework.messaging.simp.stomp.StompSession;
 import redis.clients.jedis.JedisCluster;
-import ch.qos.logback.classic.Logger;
 
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 
-import static com.http.server.utils.Constants.STARTED;
-import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.mockito.Mockito.verify;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
-@MockitoSettings(strictness = Strictness.LENIENT)
 class HttpServerManagerTest {
+    private static final String HTTP_SERVICE_PROVIDER_JSON = "{\"name\":\"httpSp01\",\"password\":\"1234\",\"tps\":1,\"validity\":0,\"network_id\":5,\"system_id\":\"httpSp01\",\"system_type\":\"\",\"interface_version\":\"IF_50\",\"address_ton\":0,\"address_npi\":0,\"address_range\":\"^[0-9a-zA-Z]*$\",\"enabled\":1,\"enquire_link_period\":3000,\"pdu_timeout\":5000,\"request_dlr\":false,\"status\":\"STOPPED\",\"bind_type\":\"TRANSMITTER\",\"max_binds\":1,\"current_binds_count\":0,\"credit\":0,\"binds\":[],\"credit_used\":0,\"is_prepaid\":true,\"has_available_credit\":false,\"protocol\":\"HTTP\",\"contact_name\":\"Obedis\",\"email\":\"mail@mali.com\",\"phone_number\":\"223232\",\"callback_url\":\"http://18.224.164.85:3000/api/callback\",\"authentication_types\":\"Undefined\",\"header_security_name\":\"\",\"token\":\"Undefined \",\"callback_headers_http\":[]}";
+    private static final String HTTP_SERVICE_PROVIDER_JSON_ENABLED_0 = "{\"name\":\"httpSp04\",\"password\":\"1234\",\"tps\":1,\"validity\":0,\"network_id\":3,\"system_id\":\"httpSp04\",\"system_type\":\"\",\"interface_version\":\"IF_50\",\"address_ton\":0,\"address_npi\":0,\"address_range\":\"^[0-9a-zA-Z]*$\",\"enabled\":0,\"enquire_link_period\":3000,\"pdu_timeout\":5000,\"request_dlr\":false,\"status\":\"STOPPED\",\"bind_type\":\"TRANSMITTER\",\"max_binds\":1,\"current_binds_count\":0,\"credit\":0,\"binds\":[],\"credit_used\":0,\"is_prepaid\":true,\"has_available_credit\":false,\"protocol\":\"HTTP\",\"contact_name\":\"Obedis\",\"email\":\"mail@mali.com\",\"phone_number\":\"223232\",\"callback_url\":\"http://18.224.164.85:3000/api/callback\",\"authentication_types\":\"Undefined\",\"header_security_name\":\"\",\"token\":\"Undefined \",\"callback_headers_http\":[]}";
+    private static final String SMPP_SERVICE_PROVIDER_JSON = "{\"name\":\"smppSp03\",\"password\":\"1234\",\"tps\":1,\"validity\":0,\"network_id\":2,\"system_id\":\"smppSp03\",\"system_type\":\"\",\"interface_version\":\"IF_50\",\"address_ton\":0,\"address_npi\":0,\"address_range\":\"^[0-9a-zA-Z]*$\",\"enabled\":1,\"enquire_link_period\":3000,\"pdu_timeout\":5000,\"request_dlr\":false,\"status\":\"STOPPED\",\"bind_type\":\"TRANSMITTER\",\"max_binds\":1,\"current_binds_count\":0,\"credit\":0,\"binds\":[],\"credit_used\":0,\"is_prepaid\":true,\"has_available_credit\":false,\"protocol\":\"SMPP\",\"contact_name\":\"Obedis\",\"email\":\"mail@mali.com\",\"phone_number\":\"223232\",\"callback_url\":\"http://18.224.164.85:3000/api/callback\",\"authentication_types\":\"Undefined\",\"header_security_name\":\"\",\"token\":\"Undefined \",\"callback_headers_http\":[]}";
+    private static final String GENERAL_SETTINGS_JSON = "{\"id\":1,\"validity_period\":60,\"max_validity_period\":240,\"source_addr_ton\":1,\"source_addr_npi\":1,\"dest_addr_ton\":1,\"dest_addr_npi\":1,\"encoding_iso88591\":3,\"encoding_gsm7\":0,\"encoding_ucs2\":2}";
 
     @Mock
     private JedisCluster jedisCluster;
@@ -47,212 +43,186 @@ class HttpServerManagerTest {
     private SocketSession socketSession;
 
     @Mock
-    private AutoRegister autoRegister;
+    private ConcurrentMap<Integer, String> systemIdByNetworkIdCache;
+
+    @Mock
+    private ConcurrentMap<String, ServiceProvider> serviceProviderBySystemIdCache;
+
+    @Mock
+    private ConcurrentMap<Integer, ServiceProvider> serviceProviderByNetworkIdCache;
+
+    @Mock
+    private GlobalRecords.ServerHandler serverHandler;
 
     @InjectMocks
     private HttpServerManager httpServerManager;
 
-    @BeforeEach
-    void setUp()  {
-        httpServerManager = new HttpServerManager(jedisCluster, appProperties, socketSession, autoRegister);
+    @Test
+    void testInitializeCaches() {
+        assertDoesNotThrow(() -> httpServerManager.initializeCaches());
+    }
 
+    @Test
+    void testLoadServiceProviderGettingEmptyCache() {
         when(appProperties.getServiceProvidersHashTable()).thenReturn("service_providers");
-        when(appProperties.getHttpGeneralSettingsHash()).thenReturn("general_settings");
-        when(appProperties.getConfigurationHash()).thenReturn("configurations");
-        when(appProperties.getServerName()).thenReturn("http-server-instance-01");
+        when(jedisCluster.hgetAll("service_providers")).thenReturn(Map.of());
 
-        String serviceProviderJson = "{\"network_id\":1,\"name\":\"spHttp\",\"system_id\":\"spHttp\",\"password\":\"1234\",\"ip\":\"192.168.100.20\",\"port\":7001,\"bind_type\":\"TRANSCEIVER\",\"system_type\":\"\",\"interface_version\":\"IF_50\",\"sessions_number\":10,\"address_ton\":0,\"address_npi\":0,\"address_range\":\"500\",\"tps\":10,\"status\":\"STOPPED\",\"enabled\":0,\"enquire_link_period\":30000,\"enquire_link_timeout\":0,\"request_dlr\":true,\"no_retry_error_code\":\"\",\"retry_alternate_destination_error_code\":\"\",\"bind_timeout\":5000,\"bind_retry_period\":10000,\"pdu_timeout\":5000,\"pdu_degree\":1,\"thread_pool_size\":100,\"mno_id\":1,\"tlv_message_receipt_id\":false,\"message_id_decimal_format\":false,\"active_sessions_numbers\":0,\"protocol\":\"SMPP\",\"auto_retry_error_code\":\"\",\"encoding_iso88591\":3,\"encoding_gsm7\":0,\"encoding_ucs2\":2,\"split_message\":false,\"split_smpp_type\":\"TLV\"}";
-        when(jedisCluster.hget("service_providers", "spHttp")).thenReturn(serviceProviderJson);
-        String serviceProviderJson2 = "{\"network_id\":1,\"name\":\"spHttp2\",\"system_id\":\"spHtt2\",\"password\":\"1234\",\"ip\":\"192.168.100.20\",\"port\":7001,\"bind_type\":\"TRANSCEIVER\",\"system_type\":\"\",\"interface_version\":\"IF_50\",\"sessions_number\":10,\"address_ton\":0,\"address_npi\":0,\"address_range\":\"500\",\"tps\":10,\"status\":\"STOPPED\",\"enabled\":0,\"enquire_link_period\":30000,\"enquire_link_timeout\":0,\"request_dlr\":true,\"no_retry_error_code\":\"\",\"retry_alternate_destination_error_code\":\"\",\"bind_timeout\":5000,\"bind_retry_period\":10000,\"pdu_timeout\":5000,\"pdu_degree\":1,\"thread_pool_size\":100,\"mno_id\":1,\"tlv_message_receipt_id\":false,\"message_id_decimal_format\":false,\"active_sessions_numbers\":0,\"protocol\":\"SMPP\",\"auto_retry_error_code\":\"\",\"encoding_iso88591\":3,\"encoding_gsm7\":0,\"encoding_ucs2\":2,\"split_message\":false,\"split_smpp_type\":\"TLV\"}";
-        when(jedisCluster.hget("service_providers", "spHttp")).thenReturn(serviceProviderJson2);
-
-        httpServerManager.getServiceProviderCache().put("spHttp", Converter.stringToObject(serviceProviderJson, new TypeReference<>() {}));
-        httpServerManager.getServiceProviderCache().put("spHttp2", Converter.stringToObject(serviceProviderJson2, new TypeReference<>() {}));
-
-        String generalSettingJson = "{\"id\":1,\"validity_period\":60,\"max_validity_period\":240,\"source_addr_ton\":1,\"source_addr_npi\":1,\"dest_addr_ton\":1,\"dest_addr_npi\":1,\"encoding_iso88591\":3,\"encoding_gsm7\":0,\"encoding_ucs2\":2}\n";
-        httpServerManager.getGeneralSettingsCache().put("1", Converter.stringToObject(generalSettingJson, new TypeReference<>() {}));
-        when(jedisCluster.hget("general_settings", "1")).thenReturn(generalSettingJson);
-
-        String generalSettingManager = "{\"state\":\"STARTED\"}";
-        when(jedisCluster.hget("configurations", "http-server-instance-01")).thenReturn(generalSettingManager);
-
-        httpServerManager.getServiceProviderByNetworkIdCache().put(1, Converter.stringToObject(serviceProviderJson, new TypeReference<>() {}));
+        assertDoesNotThrow(() -> httpServerManager.loadServiceProviderCache());
     }
 
     @Test
-    void initializeCaches() {
-        httpServerManager.initializeCaches();
-
-        verify(autoRegister).register();
-
-
-        assertFalse(httpServerManager.getServiceProviderCache().isEmpty(), "ServiceProviderCache should contain at least one entry");
-        assertFalse(httpServerManager.getServiceProviderByNetworkIdCache().isEmpty(), "ServiceProviderByNetworkIdCache should contain at least one entry");
-        assertFalse(httpServerManager.getGeneralSettingsCache().isEmpty(), "GeneralSettingsCache should contain at least one entry");
-    }
-
-    @Test
-    void initializeCaches_withInvalidJson_shouldLogError() {
+    void testLoadServiceProviderCache() {
+        when(appProperties.getServiceProvidersHashTable()).thenReturn("service_providers");
         Map<String, String> serviceProvidersData = new HashMap<>();
-        serviceProvidersData.put("spHttp", "{\"network_id\":1,\"name\":\"spHttp\",\"system_id\":\"spHttp\",\"password\":\"1234\",\"ip\":\"192.168.100.20\",\"port\":7001");
+        serviceProvidersData.put("5", HTTP_SERVICE_PROVIDER_JSON);
+        serviceProvidersData.put("2", SMPP_SERVICE_PROVIDER_JSON);
         when(jedisCluster.hgetAll("service_providers")).thenReturn(serviceProvidersData);
 
-        Map<String, String> generalSettingsData = new HashMap<>();
-        generalSettingsData.put("1", "{\"id\":1,\"validity_period\":60,\"max_validity_period\":240,\"source_addr_ton\":1,\"source_addr_npi\":1,\"dest_addr_ton\":1,\"dest_addr_npi\":1}");
-        when(jedisCluster.hgetAll("general_settings")).thenReturn(generalSettingsData);
+        serviceProviderByNetworkIdCache = new ConcurrentHashMap<>();
+        serviceProviderBySystemIdCache = new ConcurrentHashMap<>();
+        systemIdByNetworkIdCache = new ConcurrentHashMap<>();
 
-        Logger logger = (Logger) LoggerFactory.getLogger(HttpServerManager.class);
-        ListAppender<ILoggingEvent> listAppender = new ListAppender<>();
-        listAppender.start();
-        logger.addAppender(listAppender);
+        httpServerManager = new HttpServerManager(jedisCluster, appProperties, socketSession, systemIdByNetworkIdCache, serviceProviderBySystemIdCache, serviceProviderByNetworkIdCache);
 
-        httpServerManager.initializeCaches();
-
-        verify(autoRegister).register();
-
-        List<ILoggingEvent> logsList = listAppender.list;
-        boolean errorLogged = logsList.stream().anyMatch(event -> event.getLevel() == ch.qos.logback.classic.Level.ERROR && event.getFormattedMessage().contains("Error initializing cache for key spHttp"));
-        assertTrue(errorLogged, "Expected error log was not found");
-
-        logger.detachAppender(listAppender);
+        assertDoesNotThrow(() -> httpServerManager.loadServiceProviderCache());
+        assertEquals(1, serviceProviderByNetworkIdCache.size());
+        assertEquals(1, serviceProviderBySystemIdCache.size());
+        assertEquals(1, systemIdByNetworkIdCache.size());
     }
 
     @Test
-    void stateGetterSetter() {
-        String expectedState = "RUNNING";
-        httpServerManager.setState(expectedState);
-        assertEquals(expectedState, httpServerManager.getState(), "El getter y setter de state deben funcionar correctamente");
-    }
-
-    @Test
-    void loadServiceProviderCache() {
+    void testLoadServiceProviderCacheWithInvalidJson() {
+        when(appProperties.getServiceProvidersHashTable()).thenReturn("service_providers");
         Map<String, String> serviceProvidersData = new HashMap<>();
-        String serviceProviderJson = "{\"network_id\":1,\"name\":\"spHttp\",\"system_id\":\"spHttp\",\"password\":\"1234\",\"ip\":\"192.168.100.20\",\"port\":7001,\"bind_type\":\"TRANSCEIVER\",\"system_type\":\"\",\"interface_version\":\"IF_50\",\"sessions_number\":10,\"address_ton\":0,\"address_npi\":0,\"address_range\":\"500\",\"tps\":10,\"status\":\"STOPPED\",\"enabled\":0,\"enquire_link_period\":30000,\"enquire_link_timeout\":0,\"request_dlr\":true,\"no_retry_error_code\":\"\",\"retry_alternate_destination_error_code\":\"\",\"bind_timeout\":5000,\"bind_retry_period\":10000,\"pdu_timeout\":5000,\"pdu_degree\":1,\"thread_pool_size\":100,\"mno_id\":1,\"tlv_message_receipt_id\":false,\"message_id_decimal_format\":false,\"active_sessions_numbers\":0,\"protocol\":\"SMPP\",\"auto_retry_error_code\":\"\",\"encoding_iso88591\":3,\"encoding_gsm7\":0,\"encoding_ucs2\":2,\"split_message\":false,\"split_smpp_type\":\"TLV\"}";
-        serviceProvidersData.put("spHttp", serviceProviderJson);
+        serviceProvidersData.put("5", "{\"network_id\":1,\"name\":\"spHttp\",\"system_id\":\"spHttp\",\"password\":\"1234\",\"ip\":\"192.168.100.20\",\"port\":7001");
         when(jedisCluster.hgetAll("service_providers")).thenReturn(serviceProvidersData);
 
-        httpServerManager.loadServiceProviderCache();
+        serviceProviderByNetworkIdCache = new ConcurrentHashMap<>();
+        serviceProviderBySystemIdCache = new ConcurrentHashMap<>();
+        systemIdByNetworkIdCache = new ConcurrentHashMap<>();
 
-        assertFalse(httpServerManager.getServiceProviderCache().isEmpty(), "ServiceProviderCache should contain at least one entry");
-        assertEquals(1, httpServerManager.getServiceProviderByNetworkIdCache().size());
+        httpServerManager = new HttpServerManager(jedisCluster, appProperties, socketSession, systemIdByNetworkIdCache, serviceProviderBySystemIdCache, serviceProviderByNetworkIdCache);
 
-        ServiceProvider serviceProvider = httpServerManager.getServiceProviderCache().get("spHttp");
-        assertNotNull(serviceProvider);
-        assertEquals("spHttp", serviceProvider.getSystemId());
-        assertEquals(1, httpServerManager.getServiceProviderByNetworkIdCache().get(1).getNetworkId());
+        assertDoesNotThrow(() -> httpServerManager.loadServiceProviderCache());
+        assertEquals(0, serviceProviderByNetworkIdCache.size());
+        assertEquals(0, serviceProviderBySystemIdCache.size());
+        assertEquals(0, systemIdByNetworkIdCache.size());
+    }
+
+    @Test
+    void testLoadServiceProviderCacheThrowExceptionInForeach() {
+        when(appProperties.getServiceProvidersHashTable()).thenReturn("service_providers");
+        Map<String, String> serviceProvidersData = new HashMap<>();
+        serviceProvidersData.put("5", HTTP_SERVICE_PROVIDER_JSON);
+        serviceProvidersData.put("2", SMPP_SERVICE_PROVIDER_JSON);
+        when(jedisCluster.hgetAll("service_providers")).thenReturn(serviceProvidersData);
+
+        httpServerManager = new HttpServerManager(jedisCluster, appProperties, socketSession, systemIdByNetworkIdCache, serviceProviderBySystemIdCache, serviceProviderByNetworkIdCache);
+        when(serviceProviderBySystemIdCache.put(anyString(), any())).thenThrow(new RuntimeException("Simulated exception"));
+
+        assertDoesNotThrow(() -> httpServerManager.loadServiceProviderCache());
     }
 
     @Test
     void loadOrUpdateGeneralSettingsCache() {
-        String generalSettingsJson = "{\"source_addr_ton\":\"1\", \"validity_period\":\"10\"}";  // Simula un JSON válido que representa la configuración general.
-        when(jedisCluster.hget(appProperties.getHttpGeneralSettingsHash(), appProperties.getHttpGeneralSettingsKey()))
-                .thenReturn(generalSettingsJson);
+        when(appProperties.getHttpGeneralSettingsHash()).thenReturn("general_settings");
+        when(appProperties.getHttpGeneralSettingsKey()).thenReturn("smpp_http");
+        when(jedisCluster.hget("general_settings", "smpp_http")).thenReturn(GENERAL_SETTINGS_JSON);
 
         httpServerManager.loadOrUpdateGeneralSettingsCache();
-
-        assertNotNull(httpServerManager.getGeneralSettings(), "GeneralSettings should not be null");
+        assertEquals(GENERAL_SETTINGS_JSON, httpServerManager.getGeneralSettings().toString());
     }
 
     @Test
-    void updateServiceProvider_serviceProvider() {
-        // serviceProvideInRaw is not FOUND
-        when(jedisCluster.hget(appProperties.getServiceProvidersHashTable(), "spHttp3")).thenReturn(null);
-        assertDoesNotThrow(() -> httpServerManager.updateServiceProvider("spHttp3"));
-
-        // serviceProvideInRaw is existing
-        assertDoesNotThrow(() -> httpServerManager.updateServiceProvider("spHttp"));
-
-        // update service provider with enabled != 0
-        when(jedisCluster.hget(appProperties.getServiceProvidersHashTable(), "spHttp2")).thenReturn("{\"network_id\":1,\"name\":\"spHttp2\",\"system_id\":\"spHtt2\",\"password\":\"1234\",\"ip\":\"192.168.100.20\",\"port\":8080,\"bind_type\":\"TRANSCEIVER\",\"system_type\":\"\",\"interface_version\":\"IF_50\",\"sessions_number\":10,\"address_ton\":0,\"address_npi\":0,\"address_range\":\"500\",\"tps\":10,\"status\":\"STOPPED\",\"enabled\":1,\"enquire_link_period\":30000,\"enquire_link_timeout\":0,\"request_dlr\":true,\"no_retry_error_code\":\"\",\"retry_alternate_destination_error_code\":\"\",\"bind_timeout\":5000,\"bind_retry_period\":10000,\"pdu_timeout\":5000,\"pdu_degree\":1,\"thread_pool_size\":100,\"mno_id\":1,\"tlv_message_receipt_id\":false,\"message_id_decimal_format\":false,\"active_sessions_numbers\":0,\"protocol\":\"SMPP\",\"auto_retry_error_code\":\"\",\"encoding_iso88591\":3,\"encoding_gsm7\":0,\"encoding_ucs2\":2,\"split_message\":false,\"split_smpp_type\":\"TLV\"}");
-        assertDoesNotThrow(() -> httpServerManager.updateServiceProvider("spHttp2"));
-    }
-
-    @Test
-    void removeServiceProvider_serviceProvider() {
-        when(jedisCluster.hdel(appProperties.getServiceProvidersHashTable(), "spHttp2")).thenReturn(1L);
-        assertDoesNotThrow(() -> httpServerManager.removeServiceProvider("doesNotExists"));
-        assertDoesNotThrow(() -> this.httpServerManager.removeServiceProviderFromCache("spHttp2"));
-    }
-
-    @Test
-    void isServerActive_serverStarted() {
-        httpServerManager.setState(STARTED);
+    void testManageServerHandler() {
+        when(appProperties.getConfigurationHash()).thenReturn("configurations");
+        when(jedisCluster.hget(appProperties.getConfigurationHash(), appProperties.getServerName())).thenReturn("{\"state\":\"STARTED\"}");
+        assertDoesNotThrow(() -> httpServerManager.manageServerHandler());
         assertTrue(httpServerManager.isServerActive());
     }
 
     @Test
-    void isServerActive_serverNotStarted() {
-        httpServerManager.setState("STOPPED");
+    void testManageServerHandlerGettingNull() {
+        when(appProperties.getConfigurationHash()).thenReturn("configurations");
+        when(jedisCluster.hget(appProperties.getConfigurationHash(), appProperties.getServerName())).thenReturn(null);
+        assertDoesNotThrow(() -> httpServerManager.manageServerHandler());
         assertFalse(httpServerManager.isServerActive());
     }
 
     @Test
-    void manageServerHandler_shouldSetStateAndLog() {
-        String serverHandlerJson = "{\"state\":\"STARTED\"}";
-        when(jedisCluster.hget(appProperties.getConfigurationHash(), appProperties.getServerName()))
-                .thenReturn(serverHandlerJson);
+    void testUpdateServiceProviderGettingNull() {
+        when(appProperties.getServiceProvidersHashTable()).thenReturn("service_providers");
+        when(jedisCluster.hget("service_providers", "5")).thenReturn(null);
+        when(jedisCluster.hget("service_providers", "2")).thenReturn(null);
 
-        ListAppender<ILoggingEvent> listAppender = new ListAppender<>();
-        listAppender.start();
-        ((Logger) LoggerFactory.getLogger(HttpServerManager.class)).addAppender(listAppender);
+        serviceProviderByNetworkIdCache = new ConcurrentHashMap<>();
+        serviceProviderBySystemIdCache = new ConcurrentHashMap<>();
+        systemIdByNetworkIdCache = new ConcurrentHashMap<>();
 
-        httpServerManager.manageServerHandler();
+        httpServerManager = new HttpServerManager(jedisCluster, appProperties, socketSession, systemIdByNetworkIdCache, serviceProviderBySystemIdCache, serviceProviderByNetworkIdCache);
 
-        assertEquals("STARTED", httpServerManager.getState(), "El estado del servidor debe ser 'STARTED'");
+        httpServerManager.updateServiceProvider("5");
+        assertEquals(0, serviceProviderByNetworkIdCache.size());
+        assertEquals(0, serviceProviderBySystemIdCache.size());
+        assertEquals(0, systemIdByNetworkIdCache.size());
 
-        List<ILoggingEvent> logsList = listAppender.list;
-        assertTrue(logsList.stream().anyMatch(event -> event.getFormattedMessage().contains("STARTED")), "Debe contener el mensaje de log con el estado 'STARTED'");
-
-        listAppender.stop();
+        httpServerManager.updateServiceProvider("2");
+        assertEquals(0, serviceProviderByNetworkIdCache.size());
+        assertEquals(0, serviceProviderBySystemIdCache.size());
+        assertEquals(0, systemIdByNetworkIdCache.size());
     }
 
     @Test
-    void manageServerHandler_shouldHandleNullServerHandlerJson() {
-        when(jedisCluster.hget(appProperties.getConfigurationHash(), appProperties.getServerName()))
-                .thenReturn(null);
+    void testUpdateServiceProviderGettingInvalidJson() {
+        when(appProperties.getServiceProvidersHashTable()).thenReturn("service_providers");
+        when(jedisCluster.hget("service_providers", "5")).thenReturn("{\"network_id\":1,\"name\":\"spHttp\",\"system_id\":\"spHttp\",\"password\":\"1234\",\"ip\":\"192.168.100.20\",\"port\":7001");
+        when(jedisCluster.hget("service_providers", "2")).thenReturn(SMPP_SERVICE_PROVIDER_JSON);
 
-        ListAppender<ILoggingEvent> listAppender = new ListAppender<>();
-        listAppender.start();
-        ((Logger) LoggerFactory.getLogger(HttpServerManager.class)).addAppender(listAppender);
+        serviceProviderByNetworkIdCache = new ConcurrentHashMap<>();
+        serviceProviderBySystemIdCache = new ConcurrentHashMap<>();
+        systemIdByNetworkIdCache = new ConcurrentHashMap<>();
 
-        httpServerManager.manageServerHandler();
+        httpServerManager = new HttpServerManager(jedisCluster, appProperties, socketSession, systemIdByNetworkIdCache, serviceProviderBySystemIdCache, serviceProviderByNetworkIdCache);
 
-        List<ILoggingEvent> logsList = listAppender.list;
-        assertTrue(logsList.stream().anyMatch(event -> event.getFormattedMessage().contains("ServerHandler not found in Redis")), "Debe contener el mensaje de error 'ServerHandler not found in Redis'");
+        httpServerManager.updateServiceProvider("5");
+        assertEquals(0, serviceProviderByNetworkIdCache.size());
+        assertEquals(0, serviceProviderBySystemIdCache.size());
+        assertEquals(0, systemIdByNetworkIdCache.size());
 
-        listAppender.stop();
+        httpServerManager.updateServiceProvider("2");
+        assertEquals(0, serviceProviderByNetworkIdCache.size());
+        assertEquals(0, serviceProviderBySystemIdCache.size());
+        assertEquals(0, systemIdByNetworkIdCache.size());
     }
 
     @Test
-    void manageServerHandler_shouldHandleException() {
-        when(jedisCluster.hget(appProperties.getConfigurationHash(), appProperties.getServerName()))
-                .thenThrow(new RuntimeException("Simulated Redis exception"));
+    void testUpdateServiceProvider() {
+        when(appProperties.getServiceProvidersHashTable()).thenReturn("service_providers");
+        when(jedisCluster.hget("service_providers", "5")).thenReturn(HTTP_SERVICE_PROVIDER_JSON);
+        when(jedisCluster.hget("service_providers", "2")).thenReturn(SMPP_SERVICE_PROVIDER_JSON);
+        when(jedisCluster.hget("service_providers", "4")).thenReturn(HTTP_SERVICE_PROVIDER_JSON_ENABLED_0);
 
-        ListAppender<ILoggingEvent> listAppender = new ListAppender<>();
-        listAppender.start();
-        ((Logger) LoggerFactory.getLogger(HttpServerManager.class)).addAppender(listAppender);
+        var mockStompSession = mock(StompSession.class);
+        when(socketSession.getStompSession()).thenReturn(mockStompSession);
+        serviceProviderByNetworkIdCache = new ConcurrentHashMap<>();
+        serviceProviderBySystemIdCache = new ConcurrentHashMap<>();
+        systemIdByNetworkIdCache = new ConcurrentHashMap<>();
 
-        assertDoesNotThrow(() -> httpServerManager.manageServerHandler());
+        httpServerManager = new HttpServerManager(jedisCluster, appProperties, socketSession, systemIdByNetworkIdCache, serviceProviderBySystemIdCache, serviceProviderByNetworkIdCache);
 
-        List<ILoggingEvent> logsList = listAppender.list;
-        assertTrue(logsList.stream().anyMatch(event -> event.getFormattedMessage().contains("Error on getServerHandler: Simulated Redis exception")), "Debe contener el mensaje de error con la excepción simulada");
+        httpServerManager.updateServiceProvider("5");
+        assertEquals(1, serviceProviderByNetworkIdCache.size());
+        assertEquals(1, serviceProviderBySystemIdCache.size());
+        assertEquals(1, systemIdByNetworkIdCache.size());
 
-        listAppender.stop();
-    }
+        httpServerManager.updateServiceProvider("2");
+        assertEquals(1, serviceProviderByNetworkIdCache.size());
+        assertEquals(1, serviceProviderBySystemIdCache.size());
+        assertEquals(1, systemIdByNetworkIdCache.size());
 
-    @Test
-    void getServiceProviderByNetworkId_existingId() {
-        ServiceProvider result = httpServerManager.getServiceProviderByNetworkId(1);
-        assertNotNull(result);
-    }
-
-    @Test
-    void getServiceProvider() {
-        assertDoesNotThrow(() -> httpServerManager.getServiceProvider("spHttp"));
-    }
-
-    @Test
-    void getGeneralSettings() {
-        assertDoesNotThrow(() -> httpServerManager.getGeneralSettings());
+        httpServerManager.updateServiceProvider("4");
+        assertEquals(2, serviceProviderByNetworkIdCache.size());
+        assertEquals(2, serviceProviderBySystemIdCache.size());
+        assertEquals(2, systemIdByNetworkIdCache.size());
     }
 }

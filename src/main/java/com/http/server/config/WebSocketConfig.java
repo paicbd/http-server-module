@@ -1,6 +1,5 @@
 package com.http.server.config;
 
-import com.http.server.components.CustomFrameHandler;
 import com.http.server.utils.AppProperties;
 import com.paicbd.smsc.dto.UtilsRecords;
 import com.paicbd.smsc.ws.SocketClient;

@@ -1,5 +1,6 @@
 package com.http.server.utils;
 
+import lombok.Generated;
 import lombok.Getter;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
@@ -11,8 +12,8 @@ import java.util.List;
  */
 @Getter
 @Component
+@Generated
 public class AppProperties {
-
     @Value("#{'${redis.cluster.nodes}'.split(',')}")
     private List<String> redisNodes;
 
@@ -29,7 +30,7 @@ public class AppProperties {
     private boolean redisBlockWhenExhausted;
 
     @Value("${redis.queue.deliver}")
-    private String deliverSmQueue = "http_dlr";
+    private String deliverSmQueue;
 
     @Value("${queue.consumer.workers:11}")
     private int workers;
