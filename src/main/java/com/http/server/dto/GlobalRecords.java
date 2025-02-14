@@ -83,7 +83,7 @@ public class GlobalRecords {
             @JsonProperty("sm_default_msg_id") int smDefaultMsgId,
             @JsonProperty("short_message") String shortMessage,
             @JsonProperty("optional_parameters") List<UtilsRecords.OptionalParameter> optionalParameters,
-            @JsonProperty("custom_parameters") Map<String, String> customParams
+            @JsonProperty("custom_parameters") Map<String, Object> customParams
     ) {
     }
 
