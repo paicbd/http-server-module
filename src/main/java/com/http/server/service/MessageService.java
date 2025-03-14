@@ -107,6 +107,7 @@ public class MessageService {
         messageEvent.setShortMessage(messageRequest.shortMessage());
         messageEvent.setOptionalParameters(messageRequest.optionalParameters());
         messageEvent.setCustomParams(messageRequest.customParams());
+        messageEvent.setRetryDestNetworkId("");
         return messageEvent;
     }
 
